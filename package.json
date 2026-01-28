@@ -1,0 +1,20 @@
+{
+  "name": "discord-autobot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "axios": "^1.8.2",
+    "colors": "^1.4.0",
+    "https-proxy-agent": "^7.0.6",
+    "js-yaml": "^4.1.0",
+    "socks-proxy-agent": "^8.0.5"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.28.0"
+}
