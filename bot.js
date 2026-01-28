@@ -36,6 +36,7 @@ const getFileData = (path) => {
 };
 
 const LOCK_FILE = 'last_sent.txt';
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function getAgent(proxies) {
     if (!proxies || proxies.length === 0) return null;
@@ -62,7 +63,15 @@ async function sendMessage(token, agent, limitOne = false) {
     const gnList = messagesData.filter(m => m.toLowerCase().includes('gn'));
     const getRandom = (list) => list[Math.floor(Math.random() * list.length)];
 
-    for (const chat of targetChats) {
+    for (let i = 0; i < targetChats.length; i++) {
+        const chat = targetChats[i];
+
+        if (i > 0) {
+            const delay = Math.floor(Math.random() * (15000 - 8000 + 1)) + 8000;
+            console.log(`[INFO] Waiting ${delay / 1000}s before next message...`.grey);
+            await sleep(delay);
+        }
+
         let text;
         const channelLower = chat.channel.toLowerCase();
 
@@ -131,7 +140,7 @@ async function start() {
             lastSentWindow = task.id; 
             fs.writeFileSync(LOCK_FILE, lastSentWindow);
 
-            if (delay > 0) await new Promise(r => setTimeout(r, delay * 60 * 1000));
+            if (delay > 0) await sleep(delay * 60 * 1000);
             await sendMessage(token, agent);
         }
 
