@@ -3,6 +3,9 @@
 
 Syncro is a lightweight Node.js automation tool designed to maintain a natural presence on Discord. It monitors specific time windows and sends randomized "Gm", "Gn", or general messages to mimic genuine human activity.
 
+## Preview
+![Preview](./assets/demo.png)
+
 ✨ Features
 - Typing Simulation: Shows "User is typing..." before sending.
 - Anti-Spam: Automatically skips a channel if your message was the last one sent.
