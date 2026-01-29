@@ -1,4 +1,5 @@
 messages:
+  chat:
     - "Gm"
     - "gm"
     - "Gn"
@@ -12,3 +13,12 @@ messages:
     - "Helo y'all"
     - "Hi everyone"
     - "Let's cook"
+  reply_target: 
+    - "Hi Hash"
+    - "hi Hash"
+    - "hello"
+    - "morning everyone"
+  reply:
+    - "Hii"
+    - "Hello"
+    - "Holla"
