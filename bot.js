@@ -5,6 +5,33 @@ const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 const yaml = require('js-yaml');
 
+const SCHEDULE_CONFIG = [
+    { id: "night_early", label: "01:00", hour: 1 },
+    { id: "morning", label: "05:00", hour: 5 },
+    { id: "afternoon", label: "12:00", hour: 12 },
+    { id: "evening", label: "16:00", hour: 16 },
+    { id: "night", label: "22:00", hour: 22 }
+];
+
+const displayStatus = (lastSentId) => {
+    console.clear();
+    const now = new Date();
+    const currentHour = now.getHours();
+
+    const lastSentIndex = SCHEDULE_CONFIG.findIndex(s => s.id === lastSentId);
+
+    SCHEDULE_CONFIG.forEach((task, index) => {
+        let status;
+        if (index <= lastSentIndex && lastSentId !== "") {
+            status = `[COMPLETED]`.green;
+        } else {
+            status = `[PENDING]`.yellow;
+        }
+        console.log(`${status} ${task.label}`);
+    });
+    console.log(`\n[SYSTEM] Last Check: ${now.toLocaleTimeString()}`.grey);
+};
+
 const getChatData = (path) => {
     if (!fs.existsSync(path)) {
         console.log(`[WARNING] ${path} is missing.`.yellow);
@@ -44,7 +71,7 @@ function getAgent(proxies) {
     return proxy.startsWith('socks') ? new SocksProxyAgent(proxy) : new HttpsProxyAgent(proxy);
 }
 
-async function sendMessage(token, agent, limitOne = false) {
+async function sendMessage(token, agent, limitOne = false, currentTaskId = "") {
     const options = { headers: { 'Authorization': token.trim() } };
     if (agent) {
         options.httpsAgent = agent;
@@ -52,29 +79,25 @@ async function sendMessage(token, agent, limitOne = false) {
     }
 
     const allChats = getChatData('chat_ids.txt');
-    if (allChats.length === 0) return console.log("[ERROR] No channels found in chat_ids.txt".red);
+    if (allChats.length === 0) return;
 
-    if (!fs.existsSync('messages.yaml')) return console.log("[ERROR] messages.yaml is missing!".red);
+    if (!fs.existsSync('messages.yaml')) return;
     const messagesData = yaml.load(fs.readFileSync('messages.yaml', 'utf8')).messages;
     
     const targetChats = limitOne ? [allChats[0]] : allChats;
-
     const gmList = messagesData.filter(m => m.toLowerCase().includes('gm'));
     const gnList = messagesData.filter(m => m.toLowerCase().includes('gn'));
     const getRandom = (list) => list[Math.floor(Math.random() * list.length)];
 
     for (let i = 0; i < targetChats.length; i++) {
         const chat = targetChats[i];
-
         if (i > 0) {
             const delay = Math.floor(Math.random() * (15000 - 8000 + 1)) + 8000;
-            console.log(`[INFO] Waiting ${delay / 1000}s before next message...`.grey);
             await sleep(delay);
         }
 
         let text;
         const channelLower = chat.channel.toLowerCase();
-
         if (channelLower.includes('gm')) {
             text = getRandom(gmList.length > 0 ? gmList : messagesData);
         } else if (channelLower.includes('gn')) {
@@ -85,47 +108,35 @@ async function sendMessage(token, agent, limitOne = false) {
 
         try {
             await axios.post(`https://discord.com/api/v9/channels/${chat.id}/messages`, { content: text }, options);
-            console.log(`[SUCCESS] Sent "${text}" to "${chat.server}" channel "${chat.channel}"`.green);
         } catch (err) {
             console.error(`[ERROR] ${chat.server} (${chat.channel}): ${err.response?.status || err.message}`.red);
         }
     }
+    displayStatus(currentTaskId);
 }
 
 function getScheduledTask() {
     const now = new Date();
     const hour = now.getHours();
-
-    if (hour >= 1 && hour < 2) return { id: "night_early" };
-    if (hour >= 5 && hour < 6) return { id: "morning" };
-    if (hour >= 12 && hour < 13) return { id: "afternoon" };
-    if (hour >= 16 && hour < 17) return { id: "evening" };
-    if (hour >= 21 && hour < 22) return { id: "night" };
-
-    return null;
+    return SCHEDULE_CONFIG.find(s => hour === s.hour) || null;
 }
 
 async function start() {
     const tokens = getFileData('token.txt');
     const proxies = getFileData('proxy.txt');
     
-    if (tokens.length === 0) {
-        console.log("[CRITICAL] Cannot start: token.txt is missing or empty.".red);
-        return;
-    }
+    if (tokens.length === 0) return;
 
     const token = tokens[0];
     const agent = getAgent(proxies);
     let lastSentWindow = fs.existsSync(LOCK_FILE) ? fs.readFileSync(LOCK_FILE, 'utf8').trim() : "";
 
     if (process.argv.includes('--test')) {
-        console.log("[INFO] TEST mode: Sending to first channel...".magenta);
-        await sendMessage(token, agent, true);
+        await sendMessage(token, agent, true, "test");
         process.exit(0);
     }
 
-    console.log("[INFO] Scheduler active. Waiting for windows...".cyan);
-    if (proxies.length === 0) console.log("[INFO] Running without a proxy.".grey);
+    displayStatus(lastSentWindow);
     
     setInterval(async () => {
         const task = getScheduledTask();
@@ -135,18 +146,21 @@ async function start() {
             const remaining = 59 - now.getMinutes();
             const delay = remaining > 1 ? Math.floor(Math.random() * (remaining - 1)) + 1 : 0;
             
-            console.log(`[INFO] Window ${task.id} hit! Scheduled delay: ${delay}m`.yellow);
-            
             lastSentWindow = task.id; 
             fs.writeFileSync(LOCK_FILE, lastSentWindow);
 
             if (delay > 0) await sleep(delay * 60 * 1000);
-            await sendMessage(token, agent);
+            await sendMessage(token, agent, false, task.id);
         }
 
         if (!task && lastSentWindow !== "") {
-            lastSentWindow = "";
-            fs.writeFileSync(LOCK_FILE, "");
+            // Reset logic for next day or next window
+            const hour = new Date().getHours();
+            if (hour === 0) {
+                lastSentWindow = "";
+                fs.writeFileSync(LOCK_FILE, "");
+                displayStatus("");
+            }
         }
     }, 60000); 
 }

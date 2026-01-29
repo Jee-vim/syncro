@@ -19,14 +19,14 @@ Place your Discord account token inside this file. Only put one token per line.
 your_discord_token_here
 ```
 
-### 2. proxy.txt (Optional)
+### 2. chat_ids.txt
+List the channels you want to target. Use the # symbol to define the Server and Channel name for the logs. Format: ChannelID # Server Name, Channel Description
+
+### 3. proxy.txt (Optional)
 Add your proxy in http://user:pass@ip:port or socks5://... format. If you don't use a proxy, leave this file empty or do not create it.
 ```txt
 [http://username:password@123.45.67.89:8080](http://username:password@123.45.67.89:8080)
 ```
-
-### 3. chat_ids.txt
-List the channels you want to target. Use the # symbol to define the Server and Channel name for the logs. Format: ChannelID # Server Name, Channel Description
 
 ```txt
 1234567890 # MyServer, gm-gn
