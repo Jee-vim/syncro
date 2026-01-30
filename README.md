@@ -47,13 +47,13 @@ Add your proxy in http://user:pass@ip:port or socks5://... format. If you don't 
 ### Normal Mode (Scheduled)
 Runs based on the configured time windows (01:00, 05:00, 12:00, etc.):
 ```bash
-node bot.js
+node index.js
 ```
 
 ### Test Mode
 Immediately sends a message only to the first channel in your list to verify your token and proxy:
 ```bash
-node bot.js --test
+node index.js --test
 ```
 
 ## ⚠️ Disclaimer
