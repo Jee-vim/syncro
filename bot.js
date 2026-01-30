@@ -84,7 +84,8 @@ async function tryReply(chat, selfId, options, config) {
                 content: replyText,
                 message_reference: { channel_id: chat.id, message_id: target.id }
             }, options);
-            console.log(`[REPLIED] ${chat.server} -> ${target.content.substring(0, 20)}...`.blue);
+            
+            console.log(`[REPLIED] "${replyText}" -> ${target.content.substring(0, 20)} on ${chat.server} (${chat.channel})`.blue);
             return true;
         }
     } catch (err) { return false; }
@@ -112,39 +113,33 @@ async function sendMessage(token, agent, limitOne = false, currentTaskId = "") {
     for (let i = 0; i < targetChats.length; i++) {
         const chat = targetChats[i];
         const channelLower = chat.channel.toLowerCase();
-        
-        // Anti-Spam: Check if last message was mine
-        if (await isLastMessageMe(chat.id, selfId, options)) {
+        const isGreetingChannel = channelLower.includes('gm') || channelLower.includes('gn');
+
+        const lastIsMe = await isLastMessageMe(chat.id, selfId, options);
+        if (lastIsMe) {
             console.log(`[SKIP] Already last sender in ${chat.server} (${chat.channel})`.cyan);
             continue;
         }
-
-        const isGreetingChannel = channelLower.includes('gm') || channelLower.includes('gn');
 
         await sendTyping(chat.id, options);
         await sleep(Math.floor(Math.random() * 3000) + 2000);
 
         let sent = false;
 
-        // Only attempt reply if NOT a gm/gn channel
         if (!isGreetingChannel && Math.random() < 0.3) {
-            sent = await tryReply(chat, selfId, options, config);
+            const replyResult = await tryReply(chat, selfId, options, config);
+            if (replyResult) sent = true;
         }
 
         if (!sent) {
             let text;
             if (isGreetingChannel) {
-                // Strictly filter for messages containing 'gm' or 'gn'
                 const strictlyGreetings = config.chat.filter(m => 
-                    m.toLowerCase() === 'gm' || 
-                    m.toLowerCase() === 'gn'
+                    m.toLowerCase() === 'gm' || m.toLowerCase() === 'gn'
                 );
-                
-                // Fallback to searching for the string if exact match list is empty
                 const list = strictlyGreetings.length > 0 ? strictlyGreetings : config.chat.filter(m => 
                     m.toLowerCase().includes('gm') || m.toLowerCase().includes('gn')
                 );
-                
                 text = list[Math.floor(Math.random() * list.length)];
             } else {
                 text = config.chat[Math.floor(Math.random() * config.chat.length)];
@@ -152,7 +147,7 @@ async function sendMessage(token, agent, limitOne = false, currentTaskId = "") {
 
             try {
                 await axios.post(`https://discord.com/api/v9/channels/${chat.id}/messages`, { content: text }, options);
-                console.log(`[SENT] ${chat.server} (${chat.channel})`.green);
+                console.log(`[SENT] "${text}" on ${chat.server} (${chat.channel})`.green);
             } catch (err) {
                 console.error(`[ERR] ${chat.server}: ${err.response?.status}`.red);
             }
