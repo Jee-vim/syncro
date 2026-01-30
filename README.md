@@ -58,3 +58,8 @@ node index.js --test
 
 ## ⚠️ Disclaimer
 This tool is for educational purposes. Use of "self-bots" can violate Discord's Terms of Service. Use at your own risk.
+
+## 🏎️ Buy Me a Lambo
+**SOL**: E1D96h652zzTzh8QyT1Dq8AqECT3j7dbJxJMiumnBV7c
+
+**EVM**: 0x965244d54FFdf69A287e122090d320ae648f4cf8
