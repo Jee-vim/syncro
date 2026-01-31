@@ -1,15 +1,16 @@
 messages:
-  chat:
+  gm_gn:
     - "Gm"
     - "gm"
     - "Gn"
     - "gn"
+  general:
     - "Morning"
     - "Morning Everyone"
     - "Yo everyone"
     - "Hey folks"
     - "Sup"
-    - "Hellp chat"
+    - "Hello chat"
     - "Helo y'all"
     - "Hi everyone"
     - "Let's cook"

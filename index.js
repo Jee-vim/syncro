@@ -67,7 +67,7 @@ async function sendTyping(channelId, options) {
     } catch (err) {}
 }
 
-async function tryReply(chat, selfId, options, config) {
+async function tryReply(chat, selfId, options, config, isGreetingChannel) {
     try {
         const res = await axios.get(`https://discord.com/api/v9/channels/${chat.id}/messages?limit=10`, options);
         const target = res.data.find(m => 
@@ -76,9 +76,13 @@ async function tryReply(chat, selfId, options, config) {
         );
 
         if (target) {
-            const replyText = config.reply.length > 0 && config.reply[0] !== "" 
-                ? config.reply[Math.floor(Math.random() * config.reply.length)]
-                : config.chat[Math.floor(Math.random() * config.chat.length)];
+            let replyText;
+            if (config.reply && config.reply.length > 0) {
+                replyText = config.reply[Math.floor(Math.random() * config.reply.length)];
+            } else {
+                const list = isGreetingChannel ? config.gm_gn : config.general;
+                replyText = list[Math.floor(Math.random() * list.length)];
+            }
 
             await axios.post(`https://discord.com/api/v9/channels/${chat.id}/messages`, {
                 content: replyText,
@@ -127,23 +131,13 @@ async function sendMessage(token, agent, limitOne = false, currentTaskId = "") {
         let sent = false;
 
         if (!isGreetingChannel && Math.random() < 0.3) {
-            const replyResult = await tryReply(chat, selfId, options, config);
+            const replyResult = await tryReply(chat, selfId, options, config, isGreetingChannel);
             if (replyResult) sent = true;
         }
 
         if (!sent) {
-            let text;
-            if (isGreetingChannel) {
-                const strictlyGreetings = config.chat.filter(m => 
-                    m.toLowerCase() === 'gm' || m.toLowerCase() === 'gn'
-                );
-                const list = strictlyGreetings.length > 0 ? strictlyGreetings : config.chat.filter(m => 
-                    m.toLowerCase().includes('gm') || m.toLowerCase().includes('gn')
-                );
-                text = list[Math.floor(Math.random() * list.length)];
-            } else {
-                text = config.chat[Math.floor(Math.random() * config.chat.length)];
-            }
+            const list = isGreetingChannel ? config.gm_gn : config.general;
+            const text = list[Math.floor(Math.random() * list.length)];
 
             try {
                 await axios.post(`https://discord.com/api/v9/channels/${chat.id}/messages`, { content: text }, options);
