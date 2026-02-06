@@ -6,12 +6,12 @@ const { SocksProxyAgent } = require('socks-proxy-agent');
 const yaml = require('js-yaml');
 
 const SCHEDULE_CONFIG = [
-    { id: "morning_start", label: "08:00", hour: 8 },   // Wake up, check phone
-    { id: "lunch_break", label: "12:00", hour: 12 },   // Mid-day activity
-    { id: "afternoon_vibes", label: "15:00", hour: 15 },// Quick check-in
-    { id: "evening_peak", label: "19:00", hour: 19 },  // Very active time
-    { id: "night_wind_down", label: "22:00", hour: 22 },// Sending "gn"
-    { id: "late_night", label: "01:00", hour: 1 }      // Occasional late night "gn"
+    { id: "morning_start", label: "08:00", hour: 8 },
+    { id: "lunch_break", label: "12:00", hour: 12 },
+    { id: "afternoon_vibes", label: "15:00", hour: 15 },
+    { id: "evening_peak", label: "19:00", hour: 19 },
+    { id: "night_wind_down", label: "22:00", hour: 22 },
+    { id: "late_night", label: "01:00", hour: 1 }
 ];
 
 const LOCK_FILE = 'last_sent.txt';
@@ -59,8 +59,8 @@ async function getSelfId(options) {
     try {
         const res = await axios.get('https://discord.com/api/v9/users/@me', options);
         return res.data.id;
-    } catch (err) { 
-        return null; 
+    } catch (err) {
+        return null;
     }
 }
 
@@ -70,13 +70,10 @@ async function sendTyping(channelId, options) {
     } catch (err) {}
 }
 
-async function tryReply(chat, selfId, options, config, isGmGnChannel) {
+async function tryReply(chat, selfId, options, config) {
     try {
         const res = await axios.get(`https://discord.com/api/v9/channels/${chat.id}/messages?limit=10`, options);
         
-        // Only try to reply if it's NOT a gm-gn channel (replies in GM channels look bot-like)
-        if (isGmGnChannel) return false;
-
         const target = res.data.find(m => 
             m.author.id !== selfId && 
             config.reply_target.some(t => m.content.toLowerCase().includes(t.toLowerCase()))
@@ -84,7 +81,6 @@ async function tryReply(chat, selfId, options, config, isGmGnChannel) {
 
         if (target) {
             const replyText = config.reply[Math.floor(Math.random() * config.reply.length)];
-
             await axios.post(`https://discord.com/api/v9/channels/${chat.id}/messages`, {
                 content: replyText,
                 message_reference: { channel_id: chat.id, message_id: target.id }
@@ -93,8 +89,8 @@ async function tryReply(chat, selfId, options, config, isGmGnChannel) {
             console.log(`[REPLIED] "${replyText}" on ${chat.server}`.blue);
             return true;
         }
-    } catch (err) { 
-        return false; 
+    } catch (err) {
+        return false;
     }
     return false;
 }
@@ -117,16 +113,12 @@ async function sendMessage(token, agent, limitOne = false, currentTaskId = "") {
 
     const allChats = getChatData('chat_ids.txt');
     const yamlData = yaml.load(fs.readFileSync('messages.yaml', 'utf8')).messages;
-    const filterKeywords = yamlData.gm_gn.map(kw => kw.toLowerCase());
-
+    
     const chatsToProcess = limitOne ? [allChats[0]] : allChats;
 
     for (let i = 0; i < chatsToProcess.length; i++) {
         const chat = chatsToProcess[i];
-        const channelLower = chat.channel.toLowerCase();
-        
-        // Determine if this is a GM/GN channel
-        const isGmGnChannel = filterKeywords.some(kw => channelLower.includes(kw));
+        const channelLabel = chat.channel.toLowerCase();
 
         try {
             if (await isLastMessageMe(chat.id, selfId, options)) {
@@ -138,11 +130,14 @@ async function sendMessage(token, agent, limitOne = false, currentTaskId = "") {
             await sleep(Math.floor(Math.random() * 3000) + 2000);
 
             let text;
-            if (isGmGnChannel) {
-                // If it's a gm/gn channel, pick from the gm_gn list
-                text = yamlData.gm_gn[Math.floor(Math.random() * yamlData.gm_gn.length)];
+            const specialKeys = ['gmega', 'ginfra', 'gfast'];
+            
+            if (channelLabel === 'gm-gn') {
+                text = yamlData.gmgn[Math.floor(Math.random() * yamlData.gmgn.length)];
+            } else if (specialKeys.includes(channelLabel)) {
+                const pool = yamlData[channelLabel];
+                text = pool[Math.floor(Math.random() * pool.length)];
             } else {
-                // Otherwise, try to reply or send a general message
                 let sentReply = false;
                 if (Math.random() < 0.3) {
                     sentReply = await tryReply(chat, selfId, options, yamlData);
@@ -185,10 +180,10 @@ async function start() {
     }
 
     if (process.argv.includes('--test')) {
-        console.log("[TEST MODE] Sending to the first valid chat ID only...".cyan);
+        console.log("[TEST MODE] Processing chats...".cyan);
         const token = tokens[0];
         const agent = getAgent(proxies);
-        await sendMessage(token, agent, true, "test_run");
+        await sendMessage(token, agent, false, "test_run");
         process.exit(0);
     }
 

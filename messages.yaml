@@ -1,9 +1,18 @@
 messages:
-  gm_gn:
+  gmgn:
     - "Gm"
     - "gm"
     - "Gn"
     - "gn"
+  gmega:
+    - "gmega"
+    - "Gmega"
+  ginfra:
+    - "ginfra"
+    - "Ginfra"
+  gfast:
+    - "gfast"
+    - "GFast"
   general:
     - "Morning"
     - "Morning Everyone"
