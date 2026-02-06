@@ -5,28 +5,44 @@ const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 const yaml = require('js-yaml');
 
-const SCHEDULE_CONFIG = [
-    { id: "morning_start", label: "08:00", hour: 8 },
-    { id: "lunch_break", label: "12:00", hour: 12 },
-    { id: "afternoon_vibes", label: "15:00", hour: 15 },
-    { id: "evening_peak", label: "19:00", hour: 19 },
-    { id: "night_wind_down", label: "22:00", hour: 22 },
-    { id: "late_night", label: "01:00", hour: 1 }
+const WINDOWS = [
+    { name: "Morning", start: 6, end: 10 },
+    { name: "Lunch", start: 12, end: 14 },
+    { name: "Afternoon", start: 16, end: 17 },
+    { name: "Evening", start: 19, end: 21 },
+    { name: "Night", start: 22, end: 24 }
 ];
 
+let scheduledTimes = [];
 const LOCK_FILE = 'last_sent.txt';
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+function generateDailySchedule() {
+    const times = [];
+    
+    WINDOWS.forEach(w => {
+        const randomHour = Math.min(Math.floor(Math.random() * (w.end - w.start)) + w.start, 23);
+        const randomMin = Math.floor(Math.random() * 60);
+        
+        times.push({ 
+            id: `${randomHour}:${randomMin}`, 
+            hour: randomHour, 
+            minute: randomMin, 
+            label: `${String(randomHour).padStart(2, '0')}:${String(randomMin).padStart(2, '0')} (${w.name})` 
+        });
+    });
+    return times.sort((a, b) => a.hour - b.hour || a.minute - b.minute);
+}
+
 const displayStatus = (lastSentId) => {
     console.clear();
-    const now = new Date();
-    const lastSentIndex = SCHEDULE_CONFIG.findIndex(s => s.id === lastSentId);
-
-    SCHEDULE_CONFIG.forEach((task, index) => {
-        let status = (index <= lastSentIndex && lastSentId !== "") ? `[COMPLETED]`.green : `[PENDING]`.yellow;
+    console.log(`[INFO] Today's Schedule`.cyan);
+    
+    scheduledTimes.forEach(task => {
+        const isDone = task.completed || task.id === lastSentId;
+        let status = isDone ? `[COMPLETED]`.green : `[PENDING]`.yellow;
         console.log(`${status} ${task.label}`);
     });
-    console.log(`\n[SYSTEM] Last Check: ${now.toLocaleTimeString()}`.grey);
 };
 
 const getChatData = (path) => {
@@ -59,9 +75,7 @@ async function getSelfId(options) {
     try {
         const res = await axios.get('https://discord.com/api/v9/users/@me', options);
         return res.data.id;
-    } catch (err) {
-        return null;
-    }
+    } catch (err) { return null; }
 }
 
 async function sendTyping(channelId, options) {
@@ -73,7 +87,6 @@ async function sendTyping(channelId, options) {
 async function tryReply(chat, selfId, options, config) {
     try {
         const res = await axios.get(`https://discord.com/api/v9/channels/${chat.id}/messages?limit=10`, options);
-        
         const target = res.data.find(m => 
             m.author.id !== selfId && 
             config.reply_target.some(t => m.content.toLowerCase().includes(t.toLowerCase()))
@@ -85,13 +98,10 @@ async function tryReply(chat, selfId, options, config) {
                 content: replyText,
                 message_reference: { channel_id: chat.id, message_id: target.id }
             }, options);
-            
             console.log(`[REPLIED] "${replyText}" on ${chat.server}`.blue);
             return true;
         }
-    } catch (err) {
-        return false;
-    }
+    } catch (err) { return false; }
     return false;
 }
 
@@ -99,9 +109,7 @@ async function isLastMessageMe(channelId, selfId, options) {
     try {
         const res = await axios.get(`https://discord.com/api/v9/channels/${channelId}/messages?limit=1`, options);
         return res.data.length > 0 && res.data[0].author.id === selfId;
-    } catch (err) {
-        return false;
-    }
+    } catch (err) { return false; }
 }
 
 async function sendMessage(token, agent, limitOne = false, currentTaskId = "") {
@@ -113,11 +121,10 @@ async function sendMessage(token, agent, limitOne = false, currentTaskId = "") {
 
     const allChats = getChatData('chat_ids.txt');
     const yamlData = yaml.load(fs.readFileSync('messages.yaml', 'utf8')).messages;
-    
-    const chatsToProcess = limitOne ? [allChats[0]] : allChats;
+    const currentHour = new Date().getHours();
 
-    for (let i = 0; i < chatsToProcess.length; i++) {
-        const chat = chatsToProcess[i];
+    for (let i = 0; i < allChats.length; i++) {
+        const chat = allChats[i];
         const channelLabel = chat.channel.toLowerCase();
 
         try {
@@ -133,83 +140,70 @@ async function sendMessage(token, agent, limitOne = false, currentTaskId = "") {
             const specialKeys = ['gmega', 'ginfra', 'gfast'];
             
             if (channelLabel === 'gm-gn') {
-                text = yamlData.gmgn[Math.floor(Math.random() * yamlData.gmgn.length)];
-            } else if (specialKeys.includes(channelLabel)) {
-                const pool = yamlData[channelLabel];
+                let pool = yamlData.gmgn;
+                if (currentHour < 12) {
+                    pool = pool.filter(m => m.toLowerCase().includes('gm'));
+                } else if (currentHour >= 21) {
+                    pool = pool.filter(m => m.toLowerCase().includes('gn'));
+                }
                 text = pool[Math.floor(Math.random() * pool.length)];
+            } else if (specialKeys.includes(channelLabel)) {
+                text = yamlData[channelLabel][Math.floor(Math.random() * yamlData[channelLabel].length)];
             } else {
                 let sentReply = false;
-                if (Math.random() < 0.3) {
-                    sentReply = await tryReply(chat, selfId, options, yamlData);
-                }
+                if (Math.random() < 0.3) sentReply = await tryReply(chat, selfId, options, yamlData);
                 if (sentReply) continue;
                 text = yamlData.general[Math.floor(Math.random() * yamlData.general.length)];
             }
 
             await axios.post(`https://discord.com/api/v9/channels/${chat.id}/messages`, { content: text }, options);
-            console.log(`[SENT] "${text}" on ${chat.server} (${chat.channel})`.green);
+            console.log(`[SENT] "${text}" on ${chat.server}`.green);
 
         } catch (err) {
             if (err.response?.status === 429) {
                 const retryAfter = (err.response.data.retry_after || 5) * 1000;
                 await sleep(retryAfter);
-                i--; 
-                continue;
+                i--; continue;
             }
         }
-
-        if (i < chatsToProcess.length - 1) {
-            await sleep(Math.floor(Math.random() * 25000) + 20000);
-        }
+        await sleep(Math.floor(Math.random() * 25000) + 20000);
     }
-    displayStatus(currentTaskId);
-}
-
-function getScheduledTask() {
-    const hour = new Date().getHours();
-    return SCHEDULE_CONFIG.find(s => hour === s.hour) || null;
 }
 
 async function start() {
     const tokens = getFileData('token.txt');
     const proxies = getFileData('proxy.txt');
     
-    if (tokens.length === 0) {
-        console.log("[ERROR] No tokens found in token.txt".red);
-        return;
-    }
-
-    if (process.argv.includes('--test')) {
-        console.log("[TEST MODE] Processing chats...".cyan);
-        const token = tokens[0];
-        const agent = getAgent(proxies);
-        await sendMessage(token, agent, false, "test_run");
-        process.exit(0);
-    }
-
-    let lastSentWindow = fs.existsSync(LOCK_FILE) ? fs.readFileSync(LOCK_FILE, 'utf8').trim() : "";
-    displayStatus(lastSentWindow);
+    scheduledTimes = generateDailySchedule();
+    let lastSentId = fs.existsSync(LOCK_FILE) ? fs.readFileSync(LOCK_FILE, 'utf8').trim() : "";
+    
+    displayStatus(lastSentId);
     
     setInterval(async () => {
-        const task = getScheduledTask();
-        if (task && lastSentWindow !== task.id) {
-            lastSentWindow = task.id; 
-            fs.writeFileSync(LOCK_FILE, lastSentWindow);
+        const now = new Date();
+        const currentHour = now.getHours();
+        const currentMin = now.getMinutes();
 
-            const jitter = Math.floor(Math.random() * 20) + 1;
-            console.log(`[JITTER] Waiting ${jitter}m...`.magenta);
-            await sleep(jitter * 60 * 1000);
+        if (currentHour === 0 && currentMin === 0) {
+            scheduledTimes = generateDailySchedule();
+            lastSentId = "";
+            fs.writeFileSync(LOCK_FILE, "");
+        }
+
+        const task = scheduledTimes.find(t => t.hour === currentHour && t.minute === currentMin);
+        
+        if (task && lastSentId !== task.id) {
+            lastSentId = task.id; 
+            fs.writeFileSync(LOCK_FILE, lastSentId);
+            task.completed = true;
+
+            console.log(`[ACTIVE] Starting scheduled session: ${task.label}`.magenta);
 
             for (const token of tokens) {
                 const agent = getAgent(proxies);
                 await sendMessage(token, agent, false, task.id);
             }
-        }
-
-        if (new Date().getHours() === 0 && lastSentWindow !== "") {
-            lastSentWindow = "";
-            fs.writeFileSync(LOCK_FILE, "");
-            displayStatus("");
+            displayStatus(lastSentId);
         }
     }, 60000); 
 }
