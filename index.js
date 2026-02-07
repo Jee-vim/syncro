@@ -1,6 +1,6 @@
 const fs = require('fs');
 const axios = require('axios');
-const colors = require('colors');
+require('colors');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 const yaml = require('js-yaml');
@@ -17,13 +17,14 @@ let scheduledTimes = [];
 const LOCK_FILE = 'last_sent.txt';
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Helper to get today's date string
+const getTodayStr = () => new Date().toISOString().split('T')[0];
+
 function generateDailySchedule() {
     const times = [];
-    
     WINDOWS.forEach(w => {
         const randomHour = Math.min(Math.floor(Math.random() * (w.end - w.start)) + w.start, 23);
         const randomMin = Math.floor(Math.random() * 60);
-        
         times.push({ 
             id: `${randomHour}:${randomMin}`, 
             hour: randomHour, 
@@ -36,10 +37,22 @@ function generateDailySchedule() {
 
 const displayStatus = (lastSentId) => {
     console.clear();
-    console.log(`[INFO] Today's Schedule`.cyan);
+    const now = new Date();
+    const currentTotalMin = (now.getHours() * 60) + now.getMinutes();
+    
+    // Read date from lock file: "YYYY-MM-DD|H:M"
+    const lockContent = fs.existsSync(LOCK_FILE) ? fs.readFileSync(LOCK_FILE, 'utf8').trim() : "";
+    const [lockDate, lockId] = lockContent.split('|');
+
+    console.log(`[INFO] Today's Schedule (${getTodayStr()})`.cyan);
     
     scheduledTimes.forEach(task => {
-        const isDone = task.completed || task.id === lastSentId;
+        const taskTotalMin = (task.hour * 60) + task.minute;
+        // Completed if: flagged in memory OR matches lock file for today OR time has passed
+        const isDone = task.completed || 
+                      (lockDate === getTodayStr() && lockId === task.id) || 
+                      (currentTotalMin > taskTotalMin);
+        
         let status = isDone ? `[COMPLETED]`.green : `[PENDING]`.yellow;
         console.log(`${status} ${task.label}`);
     });
@@ -75,7 +88,10 @@ async function getSelfId(options) {
     try {
         const res = await axios.get('https://discord.com/api/v9/users/@me', options);
         return res.data.id;
-    } catch (err) { return null; }
+    } catch (err) {
+        console.error(`[ERROR] Failed to get self ID`.red);
+        return null; 
+    }
 }
 
 async function sendTyping(channelId, options) {
@@ -112,7 +128,7 @@ async function isLastMessageMe(channelId, selfId, options) {
     } catch (err) { return false; }
 }
 
-async function sendMessage(token, agent, limitOne = false, currentTaskId = "") {
+async function sendMessage(token, agent) {
     const options = { headers: { 'Authorization': token.trim() }, timeout: 15000 };
     if (agent) { options.httpsAgent = agent; options.httpAgent = agent; }
 
@@ -161,7 +177,8 @@ async function sendMessage(token, agent, limitOne = false, currentTaskId = "") {
 
         } catch (err) {
             if (err.response?.status === 429) {
-                const retryAfter = (err.response.data.retry_after || 5) * 1000;
+                const retryAfter = (err.response.data.retry_after || 30) * 1000;
+                console.log(`[RATE LIMIT] Waiting ${retryAfter/1000}s`.yellow);
                 await sleep(retryAfter);
                 i--; continue;
             }
@@ -175,35 +192,36 @@ async function start() {
     const proxies = getFileData('proxy.txt');
     
     scheduledTimes = generateDailySchedule();
-    let lastSentId = fs.existsSync(LOCK_FILE) ? fs.readFileSync(LOCK_FILE, 'utf8').trim() : "";
-    
-    displayStatus(lastSentId);
+    displayStatus();
     
     setInterval(async () => {
         const now = new Date();
         const currentHour = now.getHours();
         const currentMin = now.getMinutes();
+        const today = getTodayStr();
 
+        // Midnight reset
         if (currentHour === 0 && currentMin === 0) {
             scheduledTimes = generateDailySchedule();
-            lastSentId = "";
             fs.writeFileSync(LOCK_FILE, "");
         }
 
         const task = scheduledTimes.find(t => t.hour === currentHour && t.minute === currentMin);
         
-        if (task && lastSentId !== task.id) {
-            lastSentId = task.id; 
-            fs.writeFileSync(LOCK_FILE, lastSentId);
+        // Check lock file content
+        const lockContent = fs.existsSync(LOCK_FILE) ? fs.readFileSync(LOCK_FILE, 'utf8').trim() : "";
+        
+        if (task && lockContent !== `${today}|${task.id}`) {
+            fs.writeFileSync(LOCK_FILE, `${today}|${task.id}`);
             task.completed = true;
 
             console.log(`[ACTIVE] Starting scheduled session: ${task.label}`.magenta);
 
             for (const token of tokens) {
                 const agent = getAgent(proxies);
-                await sendMessage(token, agent, false, task.id);
+                await sendMessage(token, agent);
             }
-            displayStatus(lastSentId);
+            displayStatus();
         }
     }, 60000); 
 }
