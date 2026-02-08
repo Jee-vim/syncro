@@ -2,4 +2,5 @@ chat_ids.txt
 last_sent.txt
 proxy.txt
 token.txt
-watcher.js
+state.json
+self_ids.json

@@ -6,25 +6,31 @@ const { SocksProxyAgent } = require('socks-proxy-agent');
 const yaml = require('js-yaml');
 
 const WINDOWS = [
-    { name: "Morning", start: 6, end: 10 },
+    { name: "Morning", start: 5, end: 9 },
     { name: "Lunch", start: 12, end: 14 },
     { name: "Afternoon", start: 17, end: 19 },
     { name: "Night", start: 22, end: 24 }
 ];
 
-const LOCK_FILE = 'last_sent.txt';
-const SELF_ID_CACHE = 'self_ids.json';
+const STATE_FILE = 'state.json';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const getTodayStr = () => new Date().toISOString().split('T')[0];
 
 let scheduledTimes = [];
-
-// Used to back off entire tokens after a 429
 const tokenCooldowns = new Map();
-
-// Prevents spamming typing events on the same channel
 const typingCooldown = new Map();
+
+function loadState() {
+    if (!fs.existsSync(STATE_FILE)) {
+        return { selfIds: {}, lastRun: { date: '', taskId: '' } };
+    }
+    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+}
+
+function saveState(state) {
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+}
 
 function isTokenCoolingDown(token) {
     const until = tokenCooldowns.get(token);
@@ -35,17 +41,6 @@ function setTokenCooldown(token, ms) {
     tokenCooldowns.set(token, Date.now() + ms);
 }
 
-// Cache self IDs so we don’t hit /users/@me every run
-function loadSelfIds() {
-    if (!fs.existsSync(SELF_ID_CACHE)) return {};
-    return JSON.parse(fs.readFileSync(SELF_ID_CACHE, 'utf8'));
-}
-
-function saveSelfIds(data) {
-    fs.writeFileSync(SELF_ID_CACHE, JSON.stringify(data, null, 2));
-}
-
-// One random send time per window, regenerated daily
 function generateDailySchedule() {
     const times = [];
     WINDOWS.forEach(w => {
@@ -97,7 +92,6 @@ async function getSelfId(options) {
     return r.data.id;
 }
 
-// Rate-limited manually to avoid pointless penalties
 async function sendTyping(channelId, options) {
     const last = typingCooldown.get(channelId) || 0;
     if (Date.now() - last < 10000) return;
@@ -129,18 +123,14 @@ function displayStatus() {
     const now = new Date();
     const currentMin = now.getHours() * 60 + now.getMinutes();
     const today = getTodayStr();
-
-    const lock = fs.existsSync(LOCK_FILE)
-        ? fs.readFileSync(LOCK_FILE, 'utf8').trim()
-        : '';
-    const [lockDate, lockId] = lock.split('|');
+    const state = loadState();
 
     console.log(`[INFO] Today's Schedule (${today})`.cyan);
 
     scheduledTimes.forEach(t => {
         const tMin = t.hour * 60 + t.minute;
         const done =
-            (lockDate === today && lockId === t.id) ||
+            (state.lastRun.date === today && state.lastRun.taskId === t.id) ||
             currentMin > tMin;
 
         const status = done ? `[COMPLETED]`.green : `[PENDING]`.yellow;
@@ -160,14 +150,14 @@ async function sendMessage(token, agent) {
         ...(agent ? { httpsAgent: agent, httpAgent: agent } : {})
     };
 
-    const selfIds = loadSelfIds();
-    let selfId = selfIds[token];
+    let state = loadState();
+    let selfId = state.selfIds[token];
 
     if (!selfId) {
         try {
             selfId = await getSelfId(options);
-            selfIds[token] = selfId;
-            saveSelfIds(selfIds);
+            state.selfIds[token] = selfId;
+            saveState(state);
         } catch {
             return;
         }
@@ -181,14 +171,15 @@ async function sendMessage(token, agent) {
         const chat = chats[i];
 
         try {
-            // Only read message history sometimes to save API calls
-            const wantsReply = Math.random() < 0.3;
-            if (wantsReply && await isLastMessageMe(chat.id, selfId, options)) {
+            const isMe = await isLastMessageMe(chat.id, selfId, options);
+            if (isMe) {
+                console.log(`[SKIP] Already last sender in ${chat.server}`.yellow);
+                await sleep(3000 + Math.random() * 2000);
                 continue;
             }
 
             await sendTyping(chat.id, options);
-            await sleep(2000 + Math.random() * 3000);
+            await sleep(3000 + Math.random() * 4000);
 
             let text;
             const label = chat.channel.toLowerCase();
@@ -221,8 +212,7 @@ async function sendMessage(token, agent) {
             }
         }
 
-        // Slow down as we move through channels
-        await sleep(20000 + Math.random() * 15000 + i * 2000);
+        await sleep(35000 + Math.random() * 20000);
     }
 }
 
@@ -236,10 +226,13 @@ async function start() {
     setInterval(async () => {
         const now = new Date();
         const today = getTodayStr();
+        let state = loadState();
 
         if (now.getHours() === 0 && now.getMinutes() === 0) {
             scheduledTimes = generateDailySchedule();
-            fs.writeFileSync(LOCK_FILE, '');
+            state.lastRun = { date: '', taskId: '' };
+            saveState(state);
+            displayStatus();
         }
 
         const task = scheduledTimes.find(
@@ -248,13 +241,11 @@ async function start() {
 
         if (!task) return;
 
-        const lock = fs.existsSync(LOCK_FILE)
-            ? fs.readFileSync(LOCK_FILE, 'utf8').trim()
-            : '';
+        if (state.lastRun.date === today && state.lastRun.taskId === task.id) return;
 
-        if (lock === `${today}|${task.id}`) return;
-
-        fs.writeFileSync(LOCK_FILE, `${today}|${task.id}`);
+        state.lastRun = { date: today, taskId: task.id };
+        saveState(state);
+        displayStatus();
 
         for (const token of tokens) {
             await sendMessage(token, getAgent(proxies));
