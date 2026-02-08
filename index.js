@@ -8,222 +8,258 @@ const yaml = require('js-yaml');
 const WINDOWS = [
     { name: "Morning", start: 6, end: 10 },
     { name: "Lunch", start: 12, end: 14 },
-    { name: "Afternoon", start: 16, end: 17 },
-    { name: "Evening", start: 19, end: 21 },
+    { name: "Afternoon", start: 17, end: 19 },
     { name: "Night", start: 22, end: 24 }
 ];
 
-let scheduledTimes = [];
 const LOCK_FILE = 'last_sent.txt';
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const SELF_ID_CACHE = 'self_ids.json';
 
-// Helper to get today's date string
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 const getTodayStr = () => new Date().toISOString().split('T')[0];
 
+let scheduledTimes = [];
+
+// Used to back off entire tokens after a 429
+const tokenCooldowns = new Map();
+
+// Prevents spamming typing events on the same channel
+const typingCooldown = new Map();
+
+function isTokenCoolingDown(token) {
+    const until = tokenCooldowns.get(token);
+    return until && Date.now() < until;
+}
+
+function setTokenCooldown(token, ms) {
+    tokenCooldowns.set(token, Date.now() + ms);
+}
+
+// Cache self IDs so we don’t hit /users/@me every run
+function loadSelfIds() {
+    if (!fs.existsSync(SELF_ID_CACHE)) return {};
+    return JSON.parse(fs.readFileSync(SELF_ID_CACHE, 'utf8'));
+}
+
+function saveSelfIds(data) {
+    fs.writeFileSync(SELF_ID_CACHE, JSON.stringify(data, null, 2));
+}
+
+// One random send time per window, regenerated daily
 function generateDailySchedule() {
     const times = [];
     WINDOWS.forEach(w => {
-        const randomHour = Math.min(Math.floor(Math.random() * (w.end - w.start)) + w.start, 23);
-        const randomMin = Math.floor(Math.random() * 60);
-        times.push({ 
-            id: `${randomHour}:${randomMin}`, 
-            hour: randomHour, 
-            minute: randomMin, 
-            label: `${String(randomHour).padStart(2, '0')}:${String(randomMin).padStart(2, '0')} (${w.name})` 
+        const h = Math.min(
+            Math.floor(Math.random() * (w.end - w.start)) + w.start,
+            23
+        );
+        const m = Math.floor(Math.random() * 60);
+        times.push({
+            id: `${h}:${m}`,
+            hour: h,
+            minute: m,
+            label: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} (${w.name})`
         });
     });
     return times.sort((a, b) => a.hour - b.hour || a.minute - b.minute);
 }
 
-const displayStatus = (lastSentId) => {
-    console.clear();
-    const now = new Date();
-    const currentTotalMin = (now.getHours() * 60) + now.getMinutes();
-    
-    // Read date from lock file: "YYYY-MM-DD|H:M"
-    const lockContent = fs.existsSync(LOCK_FILE) ? fs.readFileSync(LOCK_FILE, 'utf8').trim() : "";
-    const [lockDate, lockId] = lockContent.split('|');
+const getFileData = path =>
+    fs.existsSync(path)
+        ? fs.readFileSync(path, 'utf8')
+            .split('\n')
+            .map(l => l.split('#')[0].trim())
+            .filter(Boolean)
+        : [];
 
-    console.log(`[INFO] Today's Schedule (${getTodayStr()})`.cyan);
-    
-    scheduledTimes.forEach(task => {
-        const taskTotalMin = (task.hour * 60) + task.minute;
-        // Completed if: flagged in memory OR matches lock file for today OR time has passed
-        const isDone = task.completed || 
-                      (lockDate === getTodayStr() && lockId === task.id) || 
-                      (currentTotalMin > taskTotalMin);
-        
-        let status = isDone ? `[COMPLETED]`.green : `[PENDING]`.yellow;
-        console.log(`${status} ${task.label}`);
-    });
-};
-
-const getChatData = (path) => {
-    if (!fs.existsSync(path)) return [];
-    return fs.readFileSync(path, 'utf8')
-        .split('\n')
-        .filter(line => line.trim() !== '' && line.includes('#'))
-        .map(line => {
-            const [idPart, commentPart] = line.split('#');
-            const [server, channel] = commentPart.split(',').map(s => s.trim());
-            return { id: idPart.trim(), server, channel };
-        });
-};
-
-const getFileData = (path) => {
-    if (!fs.existsSync(path)) return [];
-    return fs.readFileSync(path, 'utf8')
-        .split('\n')
-        .map(line => line.split('#')[0].trim())
-        .filter(line => line !== '');
-};
+const getChatData = path =>
+    fs.existsSync(path)
+        ? fs.readFileSync(path, 'utf8')
+            .split('\n')
+            .filter(l => l.includes('#'))
+            .map(l => {
+                const [id, rest] = l.split('#');
+                const [server, channel] = rest.split(',').map(s => s.trim());
+                return { id: id.trim(), server, channel };
+            })
+        : [];
 
 function getAgent(proxies) {
-    if (!proxies || proxies.length === 0) return null;
-    const proxy = proxies[Math.floor(Math.random() * proxies.length)].trim();
-    return proxy.startsWith('socks') ? new SocksProxyAgent(proxy) : new HttpsProxyAgent(proxy);
+    if (!proxies.length) return null;
+    const p = proxies[Math.floor(Math.random() * proxies.length)];
+    return p.startsWith('socks')
+        ? new SocksProxyAgent(p)
+        : new HttpsProxyAgent(p);
 }
 
 async function getSelfId(options) {
-    try {
-        const res = await axios.get('https://discord.com/api/v9/users/@me', options);
-        return res.data.id;
-    } catch (err) {
-        console.error(`[ERROR] Failed to get self ID`.red);
-        return null; 
-    }
+    const r = await axios.get('https://discord.com/api/v9/users/@me', options);
+    return r.data.id;
 }
 
+// Rate-limited manually to avoid pointless penalties
 async function sendTyping(channelId, options) {
-    try {
-        await axios.post(`https://discord.com/api/v9/channels/${channelId}/typing`, {}, options);
-    } catch (err) {}
-}
+    const last = typingCooldown.get(channelId) || 0;
+    if (Date.now() - last < 10000) return;
 
-async function tryReply(chat, selfId, options, config) {
+    typingCooldown.set(channelId, Date.now());
     try {
-        const res = await axios.get(`https://discord.com/api/v9/channels/${chat.id}/messages?limit=10`, options);
-        const target = res.data.find(m => 
-            m.author.id !== selfId && 
-            config.reply_target.some(t => m.content.toLowerCase().includes(t.toLowerCase()))
+        await axios.post(
+            `https://discord.com/api/v9/channels/${channelId}/typing`,
+            {},
+            options
         );
-
-        if (target) {
-            const replyText = config.reply[Math.floor(Math.random() * config.reply.length)];
-            await axios.post(`https://discord.com/api/v9/channels/${chat.id}/messages`, {
-                content: replyText,
-                message_reference: { channel_id: chat.id, message_id: target.id }
-            }, options);
-            console.log(`[REPLIED] "${replyText}" on ${chat.server}`.blue);
-            return true;
-        }
-    } catch (err) { return false; }
-    return false;
+    } catch {}
 }
 
 async function isLastMessageMe(channelId, selfId, options) {
     try {
-        const res = await axios.get(`https://discord.com/api/v9/channels/${channelId}/messages?limit=1`, options);
-        return res.data.length > 0 && res.data[0].author.id === selfId;
-    } catch (err) { return false; }
+        const r = await axios.get(
+            `https://discord.com/api/v9/channels/${channelId}/messages?limit=1`,
+            options
+        );
+        return r.data[0]?.author?.id === selfId;
+    } catch {
+        return false;
+    }
+}
+
+function displayStatus() {
+    console.clear();
+    const now = new Date();
+    const currentMin = now.getHours() * 60 + now.getMinutes();
+    const today = getTodayStr();
+
+    const lock = fs.existsSync(LOCK_FILE)
+        ? fs.readFileSync(LOCK_FILE, 'utf8').trim()
+        : '';
+    const [lockDate, lockId] = lock.split('|');
+
+    console.log(`[INFO] Today's Schedule (${today})`.cyan);
+
+    scheduledTimes.forEach(t => {
+        const tMin = t.hour * 60 + t.minute;
+        const done =
+            (lockDate === today && lockId === t.id) ||
+            currentMin > tMin;
+
+        const status = done ? `[COMPLETED]`.green : `[PENDING]`.yellow;
+        console.log(`${status} ${t.label}`);
+    });
 }
 
 async function sendMessage(token, agent) {
-    const options = { headers: { 'Authorization': token.trim() }, timeout: 15000 };
-    if (agent) { options.httpsAgent = agent; options.httpAgent = agent; }
+    if (isTokenCoolingDown(token)) {
+        console.log(`[COOLDOWN] Token cooling down, skipped`.gray);
+        return;
+    }
 
-    const selfId = await getSelfId(options);
-    if (!selfId) return;
+    const options = {
+        headers: { Authorization: token.trim() },
+        timeout: 15000,
+        ...(agent ? { httpsAgent: agent, httpAgent: agent } : {})
+    };
 
-    const allChats = getChatData('chat_ids.txt');
+    const selfIds = loadSelfIds();
+    let selfId = selfIds[token];
+
+    if (!selfId) {
+        try {
+            selfId = await getSelfId(options);
+            selfIds[token] = selfId;
+            saveSelfIds(selfIds);
+        } catch {
+            return;
+        }
+    }
+
+    const chats = getChatData('chat_ids.txt');
     const yamlData = yaml.load(fs.readFileSync('messages.yaml', 'utf8')).messages;
-    const currentHour = new Date().getHours();
+    const hour = new Date().getHours();
 
-    for (let i = 0; i < allChats.length; i++) {
-        const chat = allChats[i];
-        const channelLabel = chat.channel.toLowerCase();
+    for (let i = 0; i < chats.length; i++) {
+        const chat = chats[i];
 
         try {
-            if (await isLastMessageMe(chat.id, selfId, options)) {
-                console.log(`[SKIP] Already last sender in ${chat.server}`.cyan);
+            // Only read message history sometimes to save API calls
+            const wantsReply = Math.random() < 0.3;
+            if (wantsReply && await isLastMessageMe(chat.id, selfId, options)) {
                 continue;
             }
 
             await sendTyping(chat.id, options);
-            await sleep(Math.floor(Math.random() * 3000) + 2000);
+            await sleep(2000 + Math.random() * 3000);
 
             let text;
-            const specialKeys = ['gmega', 'ginfra', 'gfast'];
-            
-            if (channelLabel === 'gm-gn') {
+            const label = chat.channel.toLowerCase();
+
+            if (label === 'gm-gn') {
                 let pool = yamlData.gmgn;
-                if (currentHour < 12) {
-                    pool = pool.filter(m => m.toLowerCase().includes('gm'));
-                } else if (currentHour >= 21) {
-                    pool = pool.filter(m => m.toLowerCase().includes('gn'));
-                }
+                if (hour < 12) pool = pool.filter(m => m.toLowerCase().includes('gm'));
+                else if (hour >= 21) pool = pool.filter(m => m.toLowerCase().includes('gn'));
                 text = pool[Math.floor(Math.random() * pool.length)];
-            } else if (specialKeys.includes(channelLabel)) {
-                text = yamlData[channelLabel][Math.floor(Math.random() * yamlData[channelLabel].length)];
+            } else if (yamlData[label]) {
+                text = yamlData[label][Math.floor(Math.random() * yamlData[label].length)];
             } else {
-                let sentReply = false;
-                if (Math.random() < 0.3) sentReply = await tryReply(chat, selfId, options, yamlData);
-                if (sentReply) continue;
                 text = yamlData.general[Math.floor(Math.random() * yamlData.general.length)];
             }
 
-            await axios.post(`https://discord.com/api/v9/channels/${chat.id}/messages`, { content: text }, options);
-            console.log(`[SENT] "${text}" on ${chat.server}`.green);
+            await axios.post(
+                `https://discord.com/api/v9/channels/${chat.id}/messages`,
+                { content: text },
+                options
+            );
+
+            console.log(`[SENT] ${chat.server}`.green);
 
         } catch (err) {
             if (err.response?.status === 429) {
-                const retryAfter = (err.response.data.retry_after || 30) * 1000;
-                console.log(`[RATE LIMIT] Waiting ${retryAfter/1000}s`.yellow);
-                await sleep(retryAfter);
-                i--; continue;
+                const wait = (err.response.data.retry_after || 60) * 1000;
+                console.log(`[RATE LIMIT] Token cooldown ${Math.ceil(wait / 60000)}m`.yellow);
+                setTokenCooldown(token, wait + 5 * 60 * 1000);
+                break;
             }
         }
-        await sleep(Math.floor(Math.random() * 25000) + 20000);
+
+        // Slow down as we move through channels
+        await sleep(20000 + Math.random() * 15000 + i * 2000);
     }
 }
 
 async function start() {
     const tokens = getFileData('token.txt');
     const proxies = getFileData('proxy.txt');
-    
+
     scheduledTimes = generateDailySchedule();
     displayStatus();
-    
+
     setInterval(async () => {
         const now = new Date();
-        const currentHour = now.getHours();
-        const currentMin = now.getMinutes();
         const today = getTodayStr();
 
-        // Midnight reset
-        if (currentHour === 0 && currentMin === 0) {
+        if (now.getHours() === 0 && now.getMinutes() === 0) {
             scheduledTimes = generateDailySchedule();
-            fs.writeFileSync(LOCK_FILE, "");
+            fs.writeFileSync(LOCK_FILE, '');
         }
 
-        const task = scheduledTimes.find(t => t.hour === currentHour && t.minute === currentMin);
-        
-        // Check lock file content
-        const lockContent = fs.existsSync(LOCK_FILE) ? fs.readFileSync(LOCK_FILE, 'utf8').trim() : "";
-        
-        if (task && lockContent !== `${today}|${task.id}`) {
-            fs.writeFileSync(LOCK_FILE, `${today}|${task.id}`);
-            task.completed = true;
+        const task = scheduledTimes.find(
+            t => t.hour === now.getHours() && t.minute === now.getMinutes()
+        );
 
-            console.log(`[ACTIVE] Starting scheduled session: ${task.label}`.magenta);
+        if (!task) return;
 
-            for (const token of tokens) {
-                const agent = getAgent(proxies);
-                await sendMessage(token, agent);
-            }
-            displayStatus();
+        const lock = fs.existsSync(LOCK_FILE)
+            ? fs.readFileSync(LOCK_FILE, 'utf8').trim()
+            : '';
+
+        if (lock === `${today}|${task.id}`) return;
+
+        fs.writeFileSync(LOCK_FILE, `${today}|${task.id}`);
+
+        for (const token of tokens) {
+            await sendMessage(token, getAgent(proxies));
         }
-    }, 60000); 
+    }, 60000);
 }
 
 start();
